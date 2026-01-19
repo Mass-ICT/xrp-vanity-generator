@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>XRP Vanity Address Generator</title>
+    <title>XRP Vanity Generator + Xaman QR</title>
     <script src="https://unpkg.com/xrpl@2.3.0/build/xrpl-latest-min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <style>
         body { font-family: -apple-system, system-ui, sans-serif; max-width: 500px; margin: 40px auto; padding: 20px; background: #f0f2f5; }
         .card { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
@@ -16,15 +17,16 @@
         #stopBtn { background: #ff4757; color: white; display: none; }
         #status { margin: 15px 0; font-size: 14px; color: #666; text-align: center; min-height: 20px; }
         #results { margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px; border: 1px solid #d4edda; word-break: break-all; display: none; }
-        .label { font-weight: bold; font-size: 12px; color: #888; text-transform: uppercase; display: block; margin-top: 10px; }
+        .label { font-weight: bold; font-size: 12px; color: #888; text-transform: uppercase; display: block; margin-top: 15px; }
         .value { font-family: monospace; font-size: 14px; color: #2f3542; background: #eee; padding: 4px 8px; border-radius: 4px; display: block; margin-top: 4px; }
+        #qrcode { margin-top: 20px; display: flex; justify-content: center; background: white; padding: 10px; border-radius: 8px; }
     </style>
 </head>
 <body>
 
 <div class="card">
     <h2>XRP Vanity Gen</h2>
-    <p style="font-size: 14px; color: #555;">The address will start with <strong>r</strong> + your prefix.</p>
+    <p style="font-size: 14px; color: #555;">Find an address starting with <strong>r</strong> + your prefix.</p>
     
     <input type="text" id="prefix" placeholder="Example: dev" maxlength="6">
     <button id="startBtn">Start Generating</button>
@@ -34,11 +36,16 @@
     
     <div id="results">
         <span style="color: #2ed573; font-weight: bold;">✔ Match Found!</span>
-        <span class="label">Address</span>
+        
+        <span class="label">Public Address</span>
         <span id="foundAddr" class="value"></span>
-        <span class="label">Secret Key (Seed)</span>
+        
+        <span class="label">Secret Key (Scan in Xaman)</span>
         <span id="foundSecret" class="value"></span>
-        <p style="font-size: 11px; color: #ff4757; margin-top: 15px;">⚠️ Never share your Secret Key with anyone.</p>
+        
+        <div id="qrcode"></div>
+        
+        <p style="font-size: 11px; color: #ff4757; margin-top: 15px; text-align: center;">⚠️ Never share your QR code or Secret Key. Anyone with this can steal your funds.</p>
     </div>
 </div>
 
@@ -48,8 +55,8 @@
     const stopBtn = document.getElementById('stopBtn');
     const status = document.getElementById('status');
     const resultsDiv = document.getElementById('results');
+    const qrcodeContainer = document.getElementById('qrcode');
 
-    // Worker logic using the modern xrpl library
     const workerFunction = function() {
         self.onmessage = function(e) {
             const prefix = e.data.prefix.toLowerCase();
@@ -58,15 +65,13 @@
             try {
                 importScripts(libUrl);
             } catch (err) {
-                self.postMessage({ type: 'error', message: 'Could not load XRP library. Check internet connection.' });
+                self.postMessage({ type: 'error', message: 'Library Load Error' });
                 return;
             }
 
             let attempts = 0;
             while (true) {
                 attempts++;
-                
-                // Using modern xrpl.Wallet.generate()
                 const wallet = xrpl.Wallet.generate();
                 const address = wallet.classicAddress;
                 
@@ -80,7 +85,7 @@
                     break;
                 }
 
-                if (attempts % 500 === 0) {
+                if (attempts % 1000 === 0) {
                     self.postMessage({ type: 'progress', attempts: attempts });
                 }
             }
@@ -92,40 +97,39 @@
         if (!prefix) return alert("Please enter a prefix");
         
         resultsDiv.style.display = 'none';
+        qrcodeContainer.innerHTML = ''; // Clear old QR
         startBtn.style.display = 'none';
         stopBtn.style.display = 'block';
-        status.innerText = "Initializing search...";
+        status.innerText = "Searching...";
 
         const libUrl = 'https://unpkg.com/xrpl@2.3.0/build/xrpl-latest-min.js';
         const blob = new Blob(['(' + workerFunction.toString() + ')()'], { type: 'text/javascript' });
         
-        try {
-            worker = new Worker(URL.createObjectURL(blob));
-            worker.postMessage({ prefix: prefix, libUrl: libUrl });
+        worker = new Worker(URL.createObjectURL(blob));
+        worker.postMessage({ prefix: prefix, libUrl: libUrl });
 
-            worker.onmessage = function(e) {
-                if (e.data.type === 'progress') {
-                    status.innerText = "Searching... " + e.data.attempts.toLocaleString() + " attempts";
-                } else if (e.data.type === 'found') {
-                    document.getElementById('foundAddr').innerText = e.data.address;
-                    document.getElementById('foundSecret').innerText = e.data.seed;
-                    resultsDiv.style.display = 'block';
-                    status.innerText = "Found in " + e.data.attempts.toLocaleString() + " attempts!";
-                    stopSearch();
-                } else if (e.data.type === 'error') {
-                    status.innerText = e.data.message;
-                    stopSearch();
-                }
-            };
+        worker.onmessage = function(e) {
+            if (e.data.type === 'progress') {
+                status.innerText = "Searching... " + e.data.attempts.toLocaleString() + " attempts";
+            } else if (e.data.type === 'found') {
+                document.getElementById('foundAddr').innerText = e.data.address;
+                document.getElementById('foundSecret').innerText = e.data.seed;
+                
+                // Generate QR Code for the Secret Seed
+                new QRCode(qrcodeContainer, {
+                    text: e.data.seed,
+                    width: 180,
+                    height: 180,
+                    colorDark : "#000000",
+                    colorLight : "#ffffff",
+                    correctLevel : QRCode.CorrectLevel.H
+                });
 
-            worker.onerror = function(err) {
-                status.innerText = "Worker Error. If you have 'Tracking Prevention' on, try a different browser.";
+                resultsDiv.style.display = 'block';
+                status.innerText = "Finished!";
                 stopSearch();
-            };
-        } catch (e) {
-            status.innerText = "Failed to start: " + e.message;
-            stopSearch();
-        }
+            }
+        };
     };
 
     stopBtn.onclick = stopSearch;
